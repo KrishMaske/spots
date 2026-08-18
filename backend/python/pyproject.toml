@@ -1,0 +1,13 @@
+[project]
+name = "spots-reco"
+version = "0.1.0"
+description = "Spots recommendation engine — Python process serving the reco boundary."
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Runtime and test dependencies live in requirements.txt so the app can be
+# installed into a plain .venv without uv.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Spots — Cognito user pool for email/password authentication.
+
+  Tier: Essentials (the default for new pools created after 2024-11-22).
+  Free tier: 10,000 MAU per month.  Costs only begin when MAU exceeds 10,000.
+  Paid features deliberately NOT enabled:
+    - Advanced threat protection (Plus tier / paid add-on) — OFF.
+    - External SAML / OIDC federation — NOT configured (billed separately).
+    - MFA — OFF for v1; enable via UpdateUserPool when required.
+  See backend/deploy/aws/README.md for deployment instructions and how to
+  read back the outputs (issuer URL, JWKS URL, app client ID, region).
+
+Parameters:
+  SpotsEnv:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment tag (used to name the pool).
+
+Resources:
+  # ── User Pool ──────────────────────────────────────────────────────────────
+  SpotsUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "spots-users-${SpotsEnv}"
+
+      # Sign-in: email address as the primary alias.
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+
+      # Password policy: minimum length 12, complexity required.
+      # Cognito handles hashing (bcrypt); the Spots codebase stores no passwords.
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          # TemporaryPasswordValidityDays defaults to 7.
+
+      # Email verification: Cognito sends a code; user must confirm before use.
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+        # Switch to DEVELOPER + SES ARN when ready to customize sender/domain.
+
+      # Schema: keep defaults; add custom attributes here if needed later.
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+      # No MFA for v1.
+      MfaConfiguration: "OFF"
+
+      # Account recovery: email-only (avoids SMS costs and phone-number PII).
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+      # User pool tier. Essentials = 10,000 MAU free tier, no advanced threat
+      # protection (Plus), no additional cost below 10,000 MAU.
+      # Valid values: LITE | ESSENTIALS | PLUS
+      # LITE is also free below 10,000 MAU and cheaper per-MAU above it.
+      # Leave as ESSENTIALS (the default) to get basic email MFA if added later.
+      UserPoolTier: ESSENTIALS
+
+      # Deletion protection: prevent accidental stack teardown in staging/prod.
+      DeletionProtection: !If
+        - IsProd
+        - ACTIVE
+        - INACTIVE
+
+  # ── App Client ────────────────────────────────────────────────────────────
+  # Public client: no client secret. Suitable for server-side token exchange
+  # via the hosted UI redirect flow or server-proxied Cognito API calls.
+  # The Go edge validates tokens using the JWKS endpoint; it does NOT call
+  # the Cognito token endpoint (that is the mobile/web client's job).
+  SpotsAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "spots-server-${SpotsEnv}"
+      UserPoolId: !Ref SpotsUserPool
+
+      # No client secret: makes the client safe to reference from mobile/SPA
+      # and avoids storing the secret in the Go edge config.
+      GenerateSecret: false
+
+      # Token validity windows (access token expiry drives JWKS re-validation).
+      AccessTokenValidity: 60       # minutes
+      IdTokenValidity: 60           # minutes
+      RefreshTokenValidity: 30      # days
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+
+      # Auth flows:
+      #   ALLOW_USER_SRP_AUTH        — client-side SRP (Amplify SDK / future mobile).
+      #   ALLOW_USER_PASSWORD_AUTH   — server-proxied login via POST /v1/auth/login.
+      #                                Password transits the Go edge in the request
+      #                                body (acceptable for a public no-secret client
+      #                                over TLS; never logged). Enabled permanently
+      #                                as the basis for the testable auth endpoints.
+      #   ALLOW_REFRESH_TOKEN_AUTH   — token refresh via POST /v1/auth/refresh.
+      # ADMIN_USER_PASSWORD_AUTH is intentionally omitted (requires IAM admin
+      # credentials — not needed for the server-proxied public flow).
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+      # OAuth 2.0 / hosted UI config.
+      # Callback and logout URLs: update with real domain before going to prod.
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - COGNITO
+      # Placeholder callback URL — replace with mobile/web redirect URI.
+      CallbackURLs:
+        - http://localhost:8080/auth/callback
+      LogoutURLs:
+        - http://localhost:8080/auth/logout
+
+      # Prevent user-existence exposure in sign-up/sign-in error messages.
+      PreventUserExistenceErrors: ENABLED
+
+      # Read/write attributes available to this client.
+      ReadAttributes:
+        - email
+        - email_verified
+      WriteAttributes:
+        - email
+
+Conditions:
+  IsProd: !Equals [!Ref SpotsEnv, prod]
+
+Outputs:
+  UserPoolId:
+    Description: Cognito user pool ID (use in SPOTS_COGNITO_ISSUER_URL).
+    Value: !Ref SpotsUserPool
+    Export:
+      Name: !Sub "spots-${SpotsEnv}-UserPoolId"
+
+  UserPoolArn:
+    Description: Cognito user pool ARN (for IAM policies).
+    Value: !GetAtt SpotsUserPool.Arn
+    Export:
+      Name: !Sub "spots-${SpotsEnv}-UserPoolArn"
+
+  AppClientId:
+    Description: App client ID (SPOTS_COGNITO_APP_CLIENT_ID). Not a secret.
+    Value: !Ref SpotsAppClient
+    Export:
+      Name: !Sub "spots-${SpotsEnv}-AppClientId"
+
+  IssuerURL:
+    Description: >
+      Token issuer URL (SPOTS_COGNITO_ISSUER_URL).
+      Format: https://cognito-idp.{region}.amazonaws.com/{userPoolId}
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${SpotsUserPool}"
+    Export:
+      Name: !Sub "spots-${SpotsEnv}-IssuerURL"
+
+  JWKSURL:
+    Description: >
+      JWKS endpoint (SPOTS_COGNITO_JWKS_URL). Used by the Go edge for
+      token signature verification.
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${SpotsUserPool}/.well-known/jwks.json"
+    Export:
+      Name: !Sub "spots-${SpotsEnv}-JWKSURL"
+
+  Region:
+    Description: AWS region (SPOTS_COGNITO_REGION).
+    Value: !Ref AWS::Region
+    Export:
+      Name: !Sub "spots-${SpotsEnv}-Region"

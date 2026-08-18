@@ -1,0 +1,67 @@
+# Local-dev infra: PostgreSQL (pgvector) + MinIO
+# Usage:  task backend:up   (or: docker compose -f deploy/local/docker-compose.yml up -d)
+#
+# All ports and credentials are overridable via environment variables or a
+# deploy/local/.env file.  Defaults are dev-only; never use them in production.
+#
+# Data is bind-mounted to deploy/local/data/ (gitignored).
+# To wipe all local data:  task backend:nuke
+
+services:
+
+  # ── PostgreSQL with pgvector ───────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: spots-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-spots}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spots}
+      POSTGRES_DB: ${POSTGRES_DB:-spots}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spots} -d ${POSTGRES_DB:-spots}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible object store) ────────────────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: spots-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-spotsadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-spotsdev123}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── One-shot bucket bootstrap (runs once, exits 0) ─────────────────────────
+  # Creates the spots-media bucket idempotently, then exits.
+  # "Exited (0)" in `task backend:ps` output is correct — not an error.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-03T17-07-56Z
+    container_name: spots-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-spotsadmin} ${MINIO_ROOT_PASSWORD:-spotsdev123} &&
+      mc mb --ignore-existing local/${MINIO_BUCKET:-spots-media} &&
+      mc anonymous set none local/${MINIO_BUCKET:-spots-media}
+      "
+    restart: "no"

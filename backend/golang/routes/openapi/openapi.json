@@ -1,0 +1,473 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Spots API (Go)",
+    "description": "Public HTTP surface of the spotsd Go monolith. Currently exposes liveness and readiness probes, server-proxied Cognito auth endpoints (including self-service password reset), and the authenticated identity/profile endpoint; domain endpoints are added as services are built.",
+    "version": "0.4.0"
+  },
+  "servers": [
+    { "url": "http://localhost:8080", "description": "Local dev (spotsd)" }
+  ],
+  "security": [],
+  "components": {
+    "securitySchemes": {
+      "CognitoBearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Cognito access token obtained via POST /v1/auth/login. Must have token_use=access and client_id matching the configured app client."
+      }
+    },
+    "schemas": {
+      "HealthzResponse": {
+        "type": "object",
+        "required": ["status", "service", "version", "commit"],
+        "properties": {
+          "status": { "type": "string", "example": "ok" },
+          "service": { "type": "string", "example": "spotsd" },
+          "version": { "type": "string", "example": "dev" },
+          "commit": { "type": "string", "example": "none" }
+        }
+      },
+      "ReadyzResponse": {
+        "type": "object",
+        "required": ["status", "checks"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "degraded"] },
+          "checks": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "example": { "reco": "ok" }
+          }
+        }
+      },
+      "MeResponse": {
+        "type": "object",
+        "required": ["user_id", "email", "status", "display_name", "avatar_url", "home_base", "member_since"],
+        "properties": {
+          "user_id":      { "type": "string", "format": "uuid", "example": "a3f5c2d1-1234-4b56-9abc-000000000001" },
+          "email":        { "type": "string", "format": "email", "example": "alice@example.com" },
+          "status":       { "type": "string", "enum": ["active", "disabled", "deleted"], "example": "active" },
+          "display_name": { "type": "string", "example": "Alice" },
+          "avatar_url":   { "type": "string", "format": "uri", "example": "" },
+          "home_base":    { "type": "string", "example": "London" },
+          "member_since": { "type": "string", "format": "date-time", "example": "2026-06-29T12:00:00Z" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string", "example": "invalid or expired token" }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email":    { "type": "string", "format": "email", "example": "alice@example.com" },
+          "password": { "type": "string", "example": "Sup3rSecret!!23", "description": "Must meet the pool password policy (min 12 chars, mixed case, numbers, symbols)." }
+        }
+      },
+      "RegisterResponse": {
+        "type": "object",
+        "required": ["user_sub", "confirmation_required"],
+        "properties": {
+          "user_sub":              { "type": "string", "example": "a3f5c2d1-1234-4b56-9abc-000000000001", "description": "Cognito user sub (stable UUID)." },
+          "confirmation_required": { "type": "boolean", "example": true, "description": "True when the pool has AutoVerifiedAttributes=email and the user must confirm before logging in." }
+        }
+      },
+      "ConfirmRequest": {
+        "type": "object",
+        "required": ["email", "code"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "example": "alice@example.com" },
+          "code":  { "type": "string", "example": "123456", "description": "6-digit confirmation code sent by Cognito to the user's email." }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email":    { "type": "string", "format": "email", "example": "alice@example.com" },
+          "password": { "type": "string", "example": "Sup3rSecret!!23" }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "required": ["access_token", "id_token", "expires_in", "token_type"],
+        "properties": {
+          "access_token":  { "type": "string", "example": "<cognito-access-jwt>", "description": "Cognito access token (token_use=access). Pass as Bearer on protected routes." },
+          "id_token":      { "type": "string", "example": "<cognito-id-jwt>",     "description": "Cognito ID token (token_use=id). Contains user identity claims." },
+          "refresh_token": { "type": "string", "example": "<cognito-refresh>",    "description": "Refresh token. Present on login; absent on refresh (Cognito omits it)." },
+          "expires_in":    { "type": "integer", "example": 3600,                  "description": "Access token validity in seconds." },
+          "token_type":    { "type": "string", "example": "Bearer" }
+        }
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "required": ["refresh_token"],
+        "properties": {
+          "refresh_token": { "type": "string", "example": "<cognito-refresh>", "description": "Refresh token obtained from POST /v1/auth/login." }
+        }
+      },
+      "ForgotPasswordRequest": {
+        "type": "object",
+        "required": ["email"],
+        "properties": {
+          "email": { "type": "string", "format": "email", "example": "alice@example.com" }
+        }
+      },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": ["email", "code", "password"],
+        "properties": {
+          "email":    { "type": "string", "format": "email", "example": "alice@example.com" },
+          "code":     { "type": "string", "example": "123456", "description": "6-digit password-reset code emailed by Cognito. Valid for one hour — note this is shorter than the 24-hour sign-up confirmation code." },
+          "password": { "type": "string", "example": "N3wSup3rSecret!!", "description": "The new password. Must meet the pool password policy (min 12 chars, mixed case, numbers, symbols)." }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "getHealthz",
+        "summary": "Liveness probe",
+        "description": "Always returns 200 while the process is up. Makes no outbound calls and requires no infrastructure.",
+        "tags": ["health"],
+        "responses": {
+          "200": {
+            "description": "Process is alive.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthzResponse" },
+                "example": {
+                  "status": "ok",
+                  "service": "spotsd",
+                  "version": "dev",
+                  "commit": "none"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getReadyz",
+        "summary": "Readiness probe",
+        "description": "Returns 200 only when the Python reco service is reachable; otherwise 503. Does not check Postgres/Redis/object storage.",
+        "tags": ["health"],
+        "responses": {
+          "200": {
+            "description": "All checked dependencies are reachable.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadyzResponse" },
+                "example": { "status": "ok", "checks": { "reco": "ok" } }
+              }
+            }
+          },
+          "503": {
+            "description": "A checked dependency is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadyzResponse" },
+                "example": { "status": "degraded", "checks": { "reco": "unreachable" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "operationId": "authRegister",
+        "summary": "Register a new user",
+        "description": "Creates a new Cognito user. When the pool has AutoVerifiedAttributes=email, returns confirmation_required=true and Cognito sends a 6-digit code to the email address. Call POST /v1/auth/confirm with that code before logging in.",
+        "tags": ["auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RegisterRequest" },
+              "example": { "email": "alice@example.com", "password": "Sup3rSecret!!23" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "User created. Check confirmation_required to determine whether email verification is needed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RegisterResponse" },
+                "example": { "user_sub": "a3f5c2d1-1234-4b56-9abc-000000000001", "confirmation_required": true }
+              }
+            }
+          },
+          "400": {
+            "description": "Password does not meet the pool policy.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "409": {
+            "description": "Email address already registered.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "502": {
+            "description": "Cognito is unreachable or returned an unexpected error.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/auth/confirm": {
+      "post": {
+        "operationId": "authConfirm",
+        "summary": "Confirm email address",
+        "description": "Verifies the 6-digit confirmation code sent by Cognito to the user's email. The user can log in after a successful confirmation.",
+        "tags": ["auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ConfirmRequest" },
+              "example": { "email": "alice@example.com", "code": "123456" }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Email confirmed. The user may now log in."
+          },
+          "400": {
+            "description": "Confirmation code is invalid or has expired.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "502": {
+            "description": "Cognito is unreachable or returned an unexpected error.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "operationId": "authLogin",
+        "summary": "Log in with email and password",
+        "description": "Authenticates the user via USER_PASSWORD_AUTH and returns a Cognito token set. The server also bootstraps or updates the Spots user row with the login email, so GET /v1/users/me always returns a populated email field.\n\nSecurity note: with USER_PASSWORD_AUTH the password transits the Go edge in the request body. This is acceptable for a public no-secret app client over TLS; never call this endpoint over plain HTTP in production.",
+        "tags": ["auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" },
+              "example": { "email": "alice@example.com", "password": "Sup3rSecret!!23" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful. Copy access_token for use on protected routes.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TokenResponse" },
+                "example": {
+                  "access_token":  "<cognito-access-jwt>",
+                  "id_token":      "<cognito-id-jwt>",
+                  "refresh_token": "<cognito-refresh>",
+                  "expires_in":    3600,
+                  "token_type":    "Bearer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid email or password.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "403": {
+            "description": "User exists but has not confirmed their email address.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "502": {
+            "description": "Cognito is unreachable or returned an unexpected error.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "operationId": "authRefresh",
+        "summary": "Refresh access token",
+        "description": "Exchanges a refresh token for new access and ID tokens. The response does not include a new refresh token — Cognito does not issue one on refresh.",
+        "tags": ["auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RefreshRequest" },
+              "example": { "refresh_token": "<cognito-refresh>" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New access and ID tokens issued.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TokenResponse" },
+                "example": {
+                  "access_token": "<new-cognito-access-jwt>",
+                  "id_token":     "<new-cognito-id-jwt>",
+                  "expires_in":   3600,
+                  "token_type":   "Bearer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Refresh token is invalid, expired, or revoked.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "502": {
+            "description": "Cognito is unreachable or returned an unexpected error.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "authLogout",
+        "summary": "Log out (revoke all sessions)",
+        "description": "Calls Cognito GlobalSignOut with the provided access token, revoking all refresh tokens for the user (all sessions, not just the current one). The access token itself remains valid until it expires naturally.",
+        "tags": ["auth"],
+        "security": [{ "CognitoBearerAuth": [] }],
+        "responses": {
+          "204": {
+            "description": "Logged out. All refresh tokens for this user are revoked."
+          },
+          "401": {
+            "description": "Missing, invalid, or expired access token.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "502": {
+            "description": "Cognito is unreachable or returned an unexpected error.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/auth/forgot-password": {
+      "post": {
+        "operationId": "authForgotPassword",
+        "summary": "Request a password-reset code",
+        "description": "Asks Cognito to email a one-time password-reset code to the address on file. The code is valid for one hour.\n\nAlways returns 204, whether or not an account exists for the address. This is deliberate: the user pool sets PreventUserExistenceErrors=ENABLED, under which Cognito itself returns a simulated delivery destination for unknown, disabled, and unverified users. Varying the response would turn this endpoint into an account-enumeration oracle. Do not 'fix' this.\n\nCognito also caps password-reset requests per user per hour; exceeding that returns 429.",
+        "tags": ["auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ForgotPasswordRequest" },
+              "example": { "email": "alice@example.com" }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Request accepted. If an account exists for the address, a reset code has been emailed. This response does not indicate whether the account exists." },
+          "400": {
+            "description": "Malformed body or missing email.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "429": {
+            "description": "Too many password-reset requests. Wait and try again.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/auth/reset-password": {
+      "post": {
+        "operationId": "authResetPassword",
+        "summary": "Set a new password using a reset code",
+        "description": "Exchanges the emailed reset code for a new password. The new password must satisfy the pool password policy.\n\nOn success the user can log in immediately with the new password. Note that this does NOT forcibly end other sessions: access tokens already issued stay valid until they expire (up to 60 minutes), and existing refresh tokens are not explicitly revoked. Forcing a global sign-out would require an IAM-authenticated Cognito admin API, which the Go edge deliberately does not use.\n\nA code that is wrong, expired, or was never requested all return 400 with the same message — this preserves PreventUserExistenceErrors behaviour, since Cognito returns CodeMismatchException for unknown users.",
+        "tags": ["auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ResetPasswordRequest" },
+              "example": { "email": "alice@example.com", "code": "123456", "password": "N3wSup3rSecret!!" }
+            }
+          }
+        },
+        "responses": {
+          "204": { "description": "Password updated. The user can now log in with the new password." },
+          "400": {
+            "description": "Code is invalid or expired, or the new password does not meet the policy.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "403": {
+            "description": "User exists but has not confirmed their email address.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "429": {
+            "description": "Too many requests or too many failed code attempts.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "502": {
+            "description": "Cognito is unreachable or returned an unexpected error.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/users/me": {
+      "get": {
+        "operationId": "getMe",
+        "summary": "Get current user profile",
+        "description": "Returns the authenticated user's Spots identity record joined with their profile data. Requires a valid Cognito access token (token_use=access). On first login, the user row and a stub profile are created automatically. Email is populated at login time; if a token from a non-login path is used and email is absent, a single Cognito GetUser call backfills it.",
+        "tags": ["users"],
+        "security": [{ "CognitoBearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "The authenticated user's profile.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MeResponse" },
+                "example": {
+                  "user_id": "a3f5c2d1-1234-4b56-9abc-000000000001",
+                  "email": "alice@example.com",
+                  "status": "active",
+                  "display_name": "",
+                  "avatar_url": "",
+                  "home_base": "",
+                  "member_since": "2026-06-29T12:00:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired bearer token.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error resolving the user or profile.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

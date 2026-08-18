@@ -1,0 +1,81 @@
+# ── Secrets / env ──────────────────────────────────────────────────────────────
+# Ignore every .env (any dir, any suffix) but KEEP the committed *.example templates.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+.claude/settings.local.json
+
+# ── Keys / certificates / credentials ──────────────────────────────────────────
+# Push/signing keys, TLS certs, cloud creds — must never reach GitHub.
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.cer
+*.keystore
+*.jks
+*.mobileprovision
+credentials.json
+secrets.json
+aws-exports.js
+# Mobile service-config files (carry project API keys / identifiers)
+google-services.json
+GoogleService-Info.plist
+
+# ── Go ─────────────────────────────────────────────────────────────────────────
+backend/bin/
+backend/tmp/
+*.test
+*.out
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+backend/py/.venv/
+backend/py/.mypy_cache/
+backend/py/.ruff_cache/
+backend/py/.pytest_cache/
+*.egg-info/
+dist/
+
+# ── Node / mobile ──────────────────────────────────────────────────────────────
+node_modules/
+mobile/node_modules/
+.expo/
+mobile/.expo/
+mobile/dist/
+mobile/build/
+web-build/
+*.tsbuildinfo
+# If you ever run `expo prebuild`, also ignore the generated native projects:
+# mobile/ios/
+# mobile/android/
+
+# ── Test / coverage / logs ─────────────────────────────────────────────────────
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── OS / editors ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Docker ─────────────────────────────────────────────────────────────────────
+backend/deploy/local/data/
+
+# ── Generated (do NOT ignore — checked in) ────────────────────────────────────
+# backend/go/services/reco/gen/  → checked in (future)
+# mobile/src/api/generated/  → checked in
+
+docs/*
